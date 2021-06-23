@@ -43,23 +43,73 @@ if (USE_GCOV)
   find_program(COVERAGE_COMMAND NAMES gcov47 gcov)
 endif (USE_GCOV)
 
-include(CheckCCompilerFlag)
 include(CheckCXXCompilerFlag)
+include(CMakePushCheckState)
+include(CheckCSourceCompiles)
+include(CheckCXXSourceCompiles)
 
-## prepends a compiler flag if the compiler supports it
-MACRO (prepend_cflags_if_supported)
+SET(fail_patterns
+  FAIL_REGEX "unknown argument ignored"
+  FAIL_REGEX "argument unused during compilation"
+  FAIL_REGEX "unsupported .*option"
+  FAIL_REGEX "unknown .*option"
+  FAIL_REGEX "unrecognized .*option"
+  FAIL_REGEX "ignoring unknown option"
+  FAIL_REGEX "[Ww]arning: [Oo]ption"
+  FAIL_REGEX "error: visibility"
+  FAIL_REGEX "warning: visibility"
+  FAIL_REGEX "warning:.*is valid for.*but not for"
+  FAIL_REGEX "error:.*is valid for.*but not for"
+  )
+
+MACRO (TOKUDB_CHECK_C_COMPILER_FLAG FLAG RESULT)
+  CMAKE_PUSH_CHECK_STATE(RESET)
+  SET(OLD_CMAKE_C_FLAGS ${CMAKE_C_FLAGS})
+  SET(CMAKE_C_FLAGS)
+
+  SET(CMAKE_REQUIRED_FLAGS "-Werror ${FLAG}")
+  CHECK_C_SOURCE_COMPILES("int main(void) { return 0; }" ${RESULT} ${fail_patterns})
+
+  SET(CMAKE_C_FLAGS ${OLD_CMAKE_C_FLAGS})
+  CMAKE_POP_CHECK_STATE()
+ENDMACRO()
+
+MACRO (TOKUDB_CHECK_CXX_COMPILER_FLAG FLAG RESULT)
+  CMAKE_PUSH_CHECK_STATE(RESET)
+  SET(OLD_CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
+  SET(CMAKE_CXX_FLAGS)
+
+  SET(CMAKE_REQUIRED_FLAGS "-Werror ${FLAG}")
+  CHECK_CXX_SOURCE_COMPILES("int main(void) { return 0; }" ${RESULT} ${fail_patterns})
+
+  SET(CMAKE_CXX_FLAGS ${OLD_CMAKE_CXX_FLAGS})
+  CMAKE_POP_CHECK_STATE()
+ENDMACRO()
+
+## prepends a compiler flag if the compiler supports it or removes it in case
+## flag isn't supported and already set somewhere else
+MACRO (prepend_cflags_if_supported_remove_unsupported)
   FOREACH (flag ${ARGN})
-    STRING (REGEX REPLACE "-" "_" temp_flag ${flag})
-    check_c_compiler_flag (${flag} HAVE_C_${temp_flag})
-    IF (HAVE_C_${temp_flag})
+    # Create a result variable per flag to avoid reusing the same cached result
+    STRING(REGEX REPLACE "[-,= +]" "_" FLAG2 ${flag})
+
+    SET(VAR_RES "C_RESULT_${FLAG2}")
+    TOKUDB_CHECK_C_COMPILER_FLAG(${flag} ${VAR_RES})
+    IF(${VAR_RES})
       SET (CMAKE_C_FLAGS "${flag} ${CMAKE_C_FLAGS}")
-    ENDIF ()
-    check_cxx_compiler_flag (${flag} HAVE_CXX_${temp_flag})
-    IF (HAVE_CXX_${temp_flag})
+    ELSEIF(CMAKE_C_FLAGS MATCHES ${flag})
+      STRING(REGEX REPLACE "${flag}( |$)" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+    ENDIF()
+
+    SET(VAR_RES "CXX_RESULT_${FLAG2}")
+    TOKUDB_CHECK_CXX_COMPILER_FLAG(${flag} ${VAR_RES})
+    IF(${VAR_RES})
       SET (CMAKE_CXX_FLAGS "${flag} ${CMAKE_CXX_FLAGS}")
-    ENDIF ()
+    ELSEIF(CMAKE_CXX_FLAGS MATCHES ${flag})
+      STRING(REGEX REPLACE "${flag}( |$)" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+    ENDIF()
   ENDFOREACH (flag)
-ENDMACRO (prepend_cflags_if_supported)
+ENDMACRO (prepend_cflags_if_supported_remove_unsupported)
 
 ## adds a linker flag if the compiler supports it
 macro(set_ldflags_if_supported)
@@ -73,8 +123,9 @@ macro(set_ldflags_if_supported)
 endmacro(set_ldflags_if_supported)
 
 ## disable some warnings
-prepend_cflags_if_supported(
+prepend_cflags_if_supported_remove_unsupported(
   -Wno-missing-field-initializers
+  -Wno-suggest-override
   -Wstrict-null-sentinel
   -Winit-self
   -Wswitch
@@ -95,14 +146,14 @@ endif()
 
 ## Clang has stricter POD checks.  So, only enable this warning on our other builds (Linux + GCC)
 if (NOT CMAKE_CXX_COMPILER_ID MATCHES Clang)
-  prepend_cflags_if_supported(
+  prepend_cflags_if_supported_remove_unsupported(
     -Wpacked
     )
 endif ()
 
 option (PROFILING "Allow profiling and debug" ON)
 if (PROFILING)
-  prepend_cflags_if_supported(
+  prepend_cflags_if_supported_remove_unsupported(
     -fno-omit-frame-pointer
   )
 endif ()
@@ -144,7 +195,7 @@ else ()
 endif ()
 
 ## set warnings
-prepend_cflags_if_supported(
+prepend_cflags_if_supported_remove_unsupported(
   -Wextra
   -Wbad-function-cast
   -Wno-missing-noreturn
@@ -167,7 +218,7 @@ prepend_cflags_if_supported(
 
 if (NOT CMAKE_CXX_COMPILER_ID STREQUAL Clang)
   # Disabling -Wcast-align with clang.  TODO: fix casting and re-enable it, someday.
-  prepend_cflags_if_supported(-Wcast-align)
+  prepend_cflags_if_supported_remove_unsupported(-Wcast-align)
 endif ()
 
 ## always want these
